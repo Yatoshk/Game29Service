@@ -60,10 +60,9 @@ public class ProductParserService(
             int pagesCount = ParsePagesCount(htmlDoc);
 
             logger.LogInformation($"Parsing count pages from: {supplierUrl}, count of pages {pagesCount}");
-            for (int i = 1; i <= 1; i++)
+            for (int i = 1; i <= pagesCount; i++)
             {
                 string? pageUrl = configuration["SupplierSettings:BaseUrlPages"]?.Replace("{i}",  i.ToString());
-                logger.LogInformation("Parsing links of products from: {Url}", pageUrl);
                 
                 htmlContent = await httpClient.GetStringAsync(pageUrl);
             
@@ -75,7 +74,6 @@ public class ProductParserService(
                 foreach (var link in linksOfProduct)
                 {
                     string? pageUrlProduct = configuration["SupplierSettings:BaseUrl"] + link;
-                    logger.LogInformation("Parsing product from: {Url}", pageUrlProduct);
                     
                     htmlContent = await httpClient.GetStringAsync(pageUrlProduct);
             

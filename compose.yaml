@@ -1,0 +1,37 @@
+﻿version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: PriceTracker
+      POSTGRES_USER: priceuser
+      POSTGRES_PASSWORD: pricepassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U priceuser -d PriceTracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pricetracker:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=PriceTracker;Username=priceuser;Password=pricepassword;SSLMode=Prefer
+      - SupplierSettings__BaseUrl=https://game29.ru
+      - SupplierSettings__BaseUrlGetNumberOfPages=https://game29.ru/products?category=1
+      - SupplierSettings__BaseUrlPages=https://game29.ru/products?page={i}&category=1
+      - SupplierSettings__KeepIntervalDays=7
+      - SupplierSettings__UpdateIntervalHours=24
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  postgres_data:
