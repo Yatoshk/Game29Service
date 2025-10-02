@@ -27,7 +27,7 @@ services:
       - SupplierSettings__BaseUrlGetNumberOfPages=https://game29.ru/products?category=1
       - SupplierSettings__BaseUrlPages=https://game29.ru/products?page={i}&category=1
       - SupplierSettings__KeepIntervalDays=7
-      - SupplierSettings__UpdateIntervalHours=24
+      - SupplierSettings__UpdateHours=6
     depends_on:
       postgres:
         condition: service_healthy

@@ -15,84 +15,129 @@ public class ProductParserService(
     : IProductParserService
 {
     public async Task ParseAndStoreProductAsync()
+{
+    try
     {
-        try
-        {
-            logger.LogInformation("Starting price parsing from supplier...");
+        logger.LogInformation("Starting price parsing from supplier...");
 
-            using var context= contextFactory.CreateDbContext();
-            var prices = await ParseSupplierPricesAsync();
-            
-            if (prices.Any())
-            {
-                context.ProductPrices.AddRange(prices);
-                await context.SaveChangesAsync();
-                
-                logger.LogInformation("Successfully stored {Count} new price records", prices.Count);
-            }
-            else
-            {
-                logger.LogWarning("No prices were parsed from the supplier");
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error occurred while parsing prices from supplier");
-        }
-    }
-
-    private async Task<List<ProductPrice>> ParseSupplierPricesAsync()
-    {
-        var prices = new List<ProductPrice>();
-        var httpClient = httpClientFactory.CreateClient();
+        await using var context = contextFactory.CreateDbContext();
         
-        try
-        {
-            var supplierUrl = configuration["SupplierSettings:BaseUrlGetNumberOfPages"];
-            
-            httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-            
-            var htmlContent = await httpClient.GetStringAsync(supplierUrl);
-            
-            var htmlDoc = new HtmlDocument();
-            htmlDoc.LoadHtml(htmlContent);
-
-            int pagesCount = ParsePagesCount(htmlDoc);
-
-            logger.LogInformation($"Parsing count pages from: {supplierUrl}, count of pages {pagesCount}");
-            for (int i = 1; i <= pagesCount; i++)
-            {
-                string? pageUrl = configuration["SupplierSettings:BaseUrlPages"]?.Replace("{i}",  i.ToString());
-                
-                htmlContent = await httpClient.GetStringAsync(pageUrl);
-            
-                htmlDoc = new HtmlDocument();
-                htmlDoc.LoadHtml(htmlContent);
-                
-                List<String> linksOfProduct = ParseProductLinks(htmlDoc);
-
-                foreach (var link in linksOfProduct)
-                {
-                    string? pageUrlProduct = configuration["SupplierSettings:BaseUrl"] + link;
-                    
-                    htmlContent = await httpClient.GetStringAsync(pageUrlProduct);
-            
-                    htmlDoc = new HtmlDocument();
-                    htmlDoc.LoadHtml(htmlContent);
-
-                    prices.AddRange(ParseProduct(htmlDoc));
-                }
-            }
-
-            logger.LogInformation("Parsed {Count} products successfully", prices.Count);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error parsing HTML content from supplier");
-        }
-
-        return prices;
+        // Параллельный парсинг с пакетной записью
+        await ParseAndStoreInBatchesAsync(context);
+        
+        logger.LogInformation("Price parsing completed successfully");
     }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Error occurred while parsing prices from supplier");
+    }
+}
+
+private async Task ParseAndStoreInBatchesAsync(ApplicationContext context)
+{
+    var httpClient = httpClientFactory.CreateClient();
+    httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+
+    try
+    {
+        var supplierUrl = configuration["SupplierSettings:BaseUrlGetNumberOfPages"];
+        var htmlContent = await httpClient.GetStringAsync(supplierUrl);
+        var htmlDoc = new HtmlDocument();
+        htmlDoc.LoadHtml(htmlContent);
+
+        int pagesCount = ParsePagesCount(htmlDoc);
+        logger.LogInformation($"Parsing count pages from: {supplierUrl}, count of pages {pagesCount}");
+
+        const int batchSize = 50; 
+        var currentBatch = new List<ProductPrice>();
+        var totalProcessed = 0;
+
+        // Параллельная обработка страниц
+        var parallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = 5
+        };
+
+        await Parallel.ForEachAsync(
+            Enumerable.Range(1, pagesCount),
+            parallelOptions,
+            async (pageNumber, cancellationToken) =>
+            {
+                try
+                {
+                    string pageUrl = configuration["SupplierSettings:BaseUrlPages"]?.Replace("{i}", pageNumber.ToString()) ?? string.Empty;
+                    
+                    var pageHtmlContent = await httpClient.GetStringAsync(pageUrl);
+                    var pageHtmlDoc = new HtmlDocument();
+                    pageHtmlDoc.LoadHtml(pageHtmlContent);
+                    
+                    List<string> productLinks = ParseProductLinks(pageHtmlDoc);
+                    
+                    foreach (var productLink in productLinks)
+                    {
+                        try
+                        {
+                            string productUrl = configuration["SupplierSettings:BaseUrl"] + productLink;
+                            
+                            var productHtmlContent = await httpClient.GetStringAsync(productUrl);
+                            var productHtmlDoc = new HtmlDocument();
+                            productHtmlDoc.LoadHtml(productHtmlContent);
+
+                            var productPrices = ParseProduct(productHtmlDoc);
+                            
+                            lock (currentBatch)
+                            {
+                                currentBatch.AddRange(productPrices);
+                                totalProcessed += productPrices.Count;
+
+                                if (currentBatch.Count >= batchSize)
+                                {
+                                    SaveBatchToDatabase(context, currentBatch);
+                                    currentBatch = new List<ProductPrice>();
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex, "Error parsing product {ProductLink}", productLink);
+                        }
+                    }
+
+                    logger.LogInformation("Processed page {PageNumber}/{TotalPages}, total products: {Total}",
+                        pageNumber, pagesCount, totalProcessed);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Error processing page {PageNumber}", pageNumber);
+                }
+            });
+
+        if (currentBatch.Any())
+        {
+            SaveBatchToDatabase(context, currentBatch);
+        }
+
+        logger.LogInformation("Parsed and stored {Count} products successfully", totalProcessed);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Error parsing HTML content from supplier");
+    }
+}
+
+private void SaveBatchToDatabase(ApplicationContext context, List<ProductPrice> batch)
+{
+    try
+    {
+        context.ProductPrices.AddRange(batch);
+        context.SaveChanges();
+        logger.LogInformation("Saved batch of {BatchSize} products to database", batch.Count);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Error saving batch to database");
+    }
+}
 
     private int ParsePagesCount(HtmlDocument htmlDoc)
     {
@@ -177,7 +222,7 @@ public class ProductParserService(
         {
             var priceDiv = htmlDoc.DocumentNode.SelectSingleNode("//div[@style='font-size: 26px;' and contains(., '&nbsp;')]/following-sibling::div[@style='font-size: 34px;']/span[1]");
 
-            string price = priceDiv.InnerText.Trim();
+            string price = priceDiv.InnerText.Trim().Replace(" ", "");
             return decimal.Parse(price);
         }
         catch (Exception ex)

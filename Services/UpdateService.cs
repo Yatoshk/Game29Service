@@ -16,18 +16,40 @@ public class UpdateService(
         {
             try
             {
+                logger.LogInformation("Starting price update");
+            
                 using (var scope = services.CreateScope())
                 {
                     var parserService = scope.ServiceProvider.GetRequiredService<IProductParserService>();
                     await parserService.ParseAndStoreProductAsync();
                 }
+            
+                logger.LogInformation("Price update completed successfully");
             }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error occurred while updating prices.");
             }
 
-            await Task.Delay(TimeSpan.FromHours(int.Parse(configuration["SupplierSettings:UpdateIntervalHours"])), stoppingToken);
+            var nextRunTime = GetNextRunTime(int.Parse(configuration["SupplierSettings:UpdateHours"]), 0);
+            var delay = nextRunTime - DateTime.Now;
+        
+            logger.LogInformation("Next price update scheduled at: {NextRunTime}", nextRunTime);
+        
+            await Task.Delay(delay, stoppingToken);
         }
+    }
+
+    private DateTime GetNextRunTime(int targetHour, int targetMinute)
+    {
+        var now = DateTime.Now;
+        var todayTarget = new DateTime(now.Year, now.Month, now.Day, targetHour, targetMinute, 0);
+    
+        if (now > todayTarget)
+        {
+            return todayTarget.AddDays(1);
+        }
+    
+        return todayTarget;
     }
 }
